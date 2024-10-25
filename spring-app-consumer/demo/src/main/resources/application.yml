@@ -1,0 +1,20 @@
+spring:
+  application.name: demo
+  kafka:
+    bootstrap-servers: localhost:9094
+    consumer:
+#      properties:
+#        schema:
+#          registry:
+#            url: http://localhost:9093
+      group-id: my-group
+      auto-offset-reset: earliest
+    producer:
+      acks: all
+    listener:
+      missing-topics-fatal: false
+      ack-mode: manual
+logging:
+  level:
+    org.springframework.kafka: INFO
+    org.apache.kafka: INFO

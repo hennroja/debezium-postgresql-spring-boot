@@ -1,0 +1,96 @@
+services:
+  postgres:
+    image: postgres:14-alpine
+    ports:
+      - 5432:5432
+    volumes:
+      - ./postgresql.conf:/etc/postgresql/postgresql.conf
+    command: postgres -c config_file=/etc/postgresql/postgresql.conf
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=postgres
+  kafka:
+    image: confluentinc/cp-kafka:latest
+    environment:
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_NODE_ID: 1
+      CLUSTER_ID: "123"
+      KAFKA_LISTENERS: PLAINTEXT://kafka:9092,CONTROLLER://kafka:9093,CONNECT_LOCAL://0.0.0.0:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,CONNECT_LOCAL://localhost:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,CONNECT_LOCAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_MIN_INSYNC_REPLICAS: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_LOG4J_ROOT_LOGLEVEL: 'WARN'
+      KAFKA_LOG4J_LOGGERS: 'kafka=WARN,kafka.controller=WARN,kafka.log.LogCleaner=WARN,state.change.logger=WARN,kafka.producer.async.DefaultEventHandler=WARN'    
+    ports:
+      - "9094:9094"
+    volumes:
+      - ./kafka-data:/var/lib/kafka/data
+  connector:
+    image: debezium/connect:2.5
+    container_name: connector
+    ports:
+      - "8083:8083"
+    environment:
+      GROUP_ID: 1
+      CONFIG_STORAGE_TOPIC: my-connect-configs
+      OFFSET_STORAGE_TOPIC: my-connect-offsets
+      STATUS_STORAGE_TOPIC: my_connect_statuses
+      CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: false
+      #ADVERTISED_HOST_NAME: ${DOCKER_HOSTNAME}
+      LOG_LEVEL: WARN
+      BOOTSTRAP_SERVERS: kafka:9092
+    depends_on:
+      - kafka
+      - postgres
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8083"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+  setup-connector-via-curl:
+    image: curlimages/curl:latest
+    command: >
+      sh -c "curl -i -X POST -H 'Accept:application/json' -H 'Content-Type:application/json' http://connector:8083/connectors/ -d @/register-postgres.json"
+    volumes:
+      - ./register-postgres.json:/register-postgres.json
+    depends_on:
+      connector:
+        condition: service_healthy
+  akhq:
+    image: tchiotludo/akhq
+    restart: unless-stopped
+    environment:
+      AKHQ_CONFIGURATION: |
+        akhq:
+          connections:
+            docker-kafka-server:
+              properties:
+                bootstrap.servers: "kafka:9092"
+              connect:
+                - name: "connect"
+                  url: "http://connector:8083"
+          log:
+            level:
+              root: INFO
+
+    ports:
+      - 8888:8080
+    links:
+      - kafka
+  db_initializer:
+    image: postgres:latest
+    depends_on:
+      - kafka
+      - postgres
+    entrypoint: ["sh", "-c", "sleep 5 && psql -h postgres -U postgres -d postgres -c \"CREATE TABLE student_info (id SERIAL PRIMARY KEY, name VARCHAR(100) NOT NULL, subject_area VARCHAR(100) NOT NULL); INSERT INTO student_info (name, subject_area) VALUES ('Franz Josph Waltermann', 'Informatik');\""]
+    environment:
+      PGPASSWORD: password
